@@ -1,0 +1,353 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>丛林跑酷 — 2D 跑酷小游戏</title>
+<meta name="description" content="丛林滚球2D小游戏：小球在丛林中滚动，跳跃躲避障碍、收集金币，速度越来越快。支持键盘和触屏，单机即开即玩。">
+<meta name="keywords" content="跑酷,小游戏,2D游戏,丛林,跳跃,HTML5游戏,单机游戏">
+<meta name="robots" content="index,follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%233c8d4f'/><text x='50' y='72' font-size='55' text-anchor='middle'>🏃</text></svg>">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#12281a;font-family:'Segoe UI','Microsoft YaHei',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;color:#e8f0e8;overflow:hidden}
+#wrap{width:100%;max-width:900px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:12px}
+h1{font-size:26px;letter-spacing:4px;color:#ffd979;text-shadow:0 0 20px rgba(255,215,0,.3)}
+canvas{width:100%;max-width:860px;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.6);background:#87c9e8;touch-action:none;cursor:pointer}
+.info{width:100%;max-width:860px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;color:#a8d8b0;font-size:14px}
+.info .score{font-size:18px;font-weight:700;color:#ffd979}
+.controls{font-size:13px;color:#8fc49a;text-align:center;line-height:1.7}
+.controls b{color:#ffd979}
+#btn{background:linear-gradient(135deg,#3c9d54,#2a7a3f);border:none;color:#fff;padding:12px 34px;border-radius:10px;font-size:18px;font-weight:700;cursor:pointer;transition:.2s;margin-top:6px}
+#btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(60,157,84,.4)}
+#btn:disabled{opacity:.5;cursor:not-allowed}
+.overlay-hint{position:absolute;color:#fff;font-size:16px;text-shadow:0 2px 6px rgba(0,0,0,.6)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>🌴 丛林滚球</h1>
+  <canvas id="game" width="860" height="300"></canvas>
+  <div class="info">
+    <div class="score">分数 <span id="score">0</span></div>
+    <div>最高分 <span id="best">0</span></div>
+    <div>速度 <span id="spd">0</span></div>
+  </div>
+  <div class="controls">
+    <b>空格 / ↑</b> 跳跃（空中可二段跳）　<b>↓</b> 快速落地　<b>点击/触摸</b> 跳跃<br>
+    避开 <span style="color:#f06a5a">石头 / 尖刺 / 树桩</span>，收集 <span style="color:#f5c840">金币</span>！速度会越来越快
+  </div>
+  <button id="btn">🏃 开始滚动</button>
+</div>
+<script src="assets.js"></script>
+<script>
+'use strict';
+(function(){
+var IMG = window.GAME_IMAGES || {};
+var cv = document.getElementById('game');
+var ctx = cv.getContext('2d');
+var W = cv.width, H = cv.height;
+var GROUND = 252; // 地面Y
+var scoreEl = document.getElementById('score');
+var bestEl = document.getElementById('best');
+var spdEl = document.getElementById('spd');
+var btn = document.getElementById('btn');
+
+// load images
+var imgs = {};
+function preload(keys, cb){
+  var left = keys.length;
+  keys.forEach(function(k){
+    var im = new Image();
+    im.onload = function(){ if(--left===0) cb(); };
+    im.src = IMG[k];
+    imgs[k] = im;
+  });
+  if(!keys.length) cb();
+}
+
+// ===== 游戏状态 =====
+var state = 'ready'; // ready | playing | over
+var score = 0, best = parseInt(localStorage.getItem('jungleBest')||'0',10)||0;
+bestEl.textContent = best;
+var speed = 6;
+var gravity = 0.7;
+
+var player = { x: 140, y: GROUND-30, r: 30, vy:0, onGround:true, jumps:0, rot:0, squash:0 };
+var coins = [];  // {x,y,r,taken}
+var obstacles = []; // {type,x,y,w,h}
+var bgX = 0, farX = 0, midX = 0;
+var spawnT = 0, coinT = 0;
+var lastT = 0, raf = null;
+
+// ===== 障碍类型 =====
+var TYPES = [
+  {t:'rock',   w:50, h:44, img:'obstacle_rock',   groundOff:0,  score:10},
+  {t:'spike',  w:44, h:40, img:'obstacle_spike',  groundOff:0,  score:10},
+  {t:'stump',  w:40, h:50, img:'obstacle_stump',  groundOff:0,  score:15},
+  {t:'spikeground', w:90, h:30, img:'obstacle_spikeground', groundOff:0, score:15}
+];
+
+// ===== 重置 =====
+function reset(){
+  score = 0; speed = 6; scoreEl.textContent = 0;
+  player.y = GROUND-30; player.vy = 0; player.onGround = true; player.jumps = 0;
+  player.rot = 0; player.squash = 0;
+  coins = []; obstacles = []; spawnT = 0; coinT = 0;
+  bgX = 0; farX = 0; midX = 0;
+  addObstacle();
+  state = 'playing';
+  btn.textContent = '⏸ 重新开始';
+  lastT = performance.now();
+  cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(loop);
+}
+
+// ===== 生成 =====
+function addObstacle(){
+  var t = TYPES[Math.floor(Math.random()*TYPES.length)];
+  obstacles.push({ type:t.t, x: W+40, y: GROUND-t.h, w:t.w, h:t.h, img:t.img, sc:t.score });
+}
+function addCoin(){
+  var r = 16;
+  coins.push({ x: W+60, y: GROUND-80-Math.random()*70, r:r, taken:false });
+}
+
+// ===== 输入 =====
+function jump(){
+  if(state!=='playing') return;
+  if(player.onGround || player.jumps<2){
+    player.vy = player.onGround ? -15 : -13;
+    player.onGround = false;
+    player.jumps++;
+    if(player.jumps>=2) player.squash = -0.15; // 二段跳拉伸
+  }
+}
+function fastFall(){
+  if(state==='playing' && !player.onGround) player.vy = Math.max(player.vy, 14);
+}
+document.addEventListener('keydown', function(e){
+  if(e.code==='Space' || e.code==='ArrowUp'){ e.preventDefault(); jump(); }
+  if(e.code==='ArrowDown'){ e.preventDefault(); fastFall(); }
+  if(e.code==='Space' && state==='over'){ e.preventDefault(); reset(); }
+});
+cv.addEventListener('pointerdown', function(e){ e.preventDefault(); if(state==='over') reset(); else jump(); });
+cv.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+btn.addEventListener('click', function(){ if(state==='over') reset(); else if(state==='ready') reset(); });
+
+// 碰撞: 圆形 vs 矩形
+function circleRect(cx, cy, r, rx, ry, rw, rh){
+  var nx = Math.max(rx, Math.min(cx, rx+rw));
+  var ny = Math.max(ry, Math.min(cy, ry+rh));
+  var dx = cx-nx, dy = cy-ny;
+  return dx*dx + dy*dy < r*r;
+}
+// 碰撞: 圆形 vs 圆形
+function circleCircle(x1,y1,r1, x2,y2,r2){
+  var dx=x1-x2, dy=y1-y2, rr=r1+r2;
+  return dx*dx + dy*dy < rr*rr;
+}
+
+// ===== 主循环 =====
+function loop(t){
+  if(state!=='playing'){ 
+    // 渲染但不动
+    render();
+    return;
+  }
+  var dt = Math.min(50, t - lastT); lastT = t;
+  var mul = dt/16.67;
+
+  // 加速
+  speed = Math.min(16, speed + 0.002*mul);
+  score += Math.round(speed*0.1*mul);
+  scoreEl.textContent = score;
+  spdEl.textContent = Math.round(speed*3);
+
+  // 玩家物理
+  player.vy += gravity*mul;
+  player.y += player.vy*mul;
+  var wasAir = !player.onGround;
+  if(player.y >= GROUND-30){
+    // 落地瞬间压扁
+    if(wasAir && player.vy > 6) player.squash = 0.35;
+    player.y = GROUND-30; player.vy = 0; player.onGround = true; player.jumps = 0;
+  } else {
+    player.onGround = false;
+  }
+  // 弹性形变恢复
+  if(player.squash > 0) player.squash = Math.max(0, player.squash - 0.05*mul);
+  else if(player.squash < 0) player.squash = Math.min(0, player.squash + 0.06*mul);
+  // 滚动旋转(随移动)
+  player.rot += (speed*0.09)*mul;
+
+  // 背景滚动
+  bgX = (bgX + speed*0.3*mul) % W;
+  farX = (farX + speed*0.5*mul) % W;
+  midX = (midX + speed*0.8*mul) % W;
+
+  // 生成障碍
+  spawnT -= mul;
+  if(spawnT<=0){
+    addObstacle();
+    spawnT = 60 + Math.random()*50 - (speed*1.5);
+    if(spawnT<32) spawnT=32;
+  }
+  // 生成金币
+  coinT -= mul;
+  if(coinT<=0){ addCoin(); coinT = 25 + Math.random()*20; }
+
+  // 移动障碍 & 碰撞
+  for(var i=obstacles.length-1;i>=0;i--){
+    var o = obstacles[i];
+    o.x -= speed*mul;
+    if(o.x + o.w < -40){ obstacles.splice(i,1); continue; }
+    // 圆形(球) vs 矩形(障碍) 碰撞
+    if(circleRect(player.x, player.y, player.r*0.85, o.x, o.y, o.w, o.h)){
+      gameOver(); return;
+    }
+  }
+  // 金币
+  for(var j=coins.length-1;j>=0;j--){
+    var c = coins[j];
+    c.x -= speed*mul;
+    if(c.x + c.r*2 < -40){ coins.splice(j,1); continue; }
+    if(!c.taken && circleCircle(player.x, player.y, player.r*0.7, c.x, c.y, c.r)){
+      c.taken = true; coins.splice(j,1);
+      score += 25; scoreEl.textContent = score;
+    }
+  }
+
+  render();
+  raf = requestAnimationFrame(loop);
+}
+
+// ===== 渲染 =====
+function drawImageCentered(img, cx, cy, w, h){
+  ctx.drawImage(img, cx-w/2, cy-h/2, w, h);
+}
+// 画球: 带旋转条纹、高光、弹性形变(squash>0压扁, <0拉伸)
+function drawBall(cx, cy, r, rot, squash){
+  ctx.save();
+  ctx.translate(cx, cy);
+  // 弹性形变: 压扁则横向宽纵向窄; 拉伸反之
+  var sy = 1 - squash, sx = 1 + squash;
+  ctx.scale(sx, sy);
+  // 球体
+  var grad = ctx.createRadialGradient(-r*0.3,-r*0.3,r*0.2, 0,0,r);
+  grad.addColorStop(0,'#ff8a5c'); grad.addColorStop(0.6,'#e84a3a'); grad.addColorStop(1,'#b02b24');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+  // 旋转条纹(随滚动)
+  ctx.save();
+  ctx.rotate(rot);
+  ctx.fillStyle = 'rgba(255,255,255,.25)';
+  ctx.beginPath();
+  ctx.arc(0,0,r*0.62, 0.3, Math.PI-0.3);
+  ctx.arc(0,0,r*0.62, Math.PI+0.3, Math.PI*2-0.3);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = r*0.14;
+  ctx.beginPath(); ctx.arc(0,0,r*0.45, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,.35)';
+  ctx.beginPath(); ctx.ellipse(-r*0.35,-r*0.42,r*0.3,r*0.22,-0.7,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function render(){
+  ctx.clearRect(0,0,W,H);
+
+  // 天空渐变
+  var g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#87c9e8'); g.addColorStop(0.7,'#bfe3c8'); g.addColorStop(1,'#8fd08f');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+  // 云(远) 滚动
+  ctx.globalAlpha = 0.85;
+  for(var i=0;i<3;i++){
+    var cx = (180 + i*300 - farX*0.3) % (W+200) - 100;
+    drawCloud(cx, 50+i*20);
+  }
+  ctx.globalAlpha = 1;
+
+  // 背景图(主bg 平铺滚动)
+  if(imgs.bg_jungle){
+    var bg = imgs.bg_jungle;
+    // 用bg图作地面以上背景
+    var off = bgX % W;
+    ctx.drawImage(bg, -off, 0, W, 240);
+    ctx.drawImage(bg, W-off, 0, W, 240);
+  }
+
+  // 地面
+  ctx.fillStyle = '#78b86a';
+  ctx.fillRect(0, GROUND, W, H-GROUND);
+  ctx.fillStyle = '#5da354';
+  ctx.fillRect(0, GROUND, W, 6);
+  ctx.fillStyle = '#8fd07e';
+  ctx.fillRect(0, GROUND+12, W, 3);
+
+  // 金币
+  coins.forEach(function(c){
+    if(imgs.coin){ drawImageCentered(imgs.coin, c.x, c.y, c.r*2.4, c.r*2.4); }
+    else { ctx.fillStyle='#f5c840'; ctx.beginPath(); ctx.arc(c.x,c.y,c.r,0,Math.PI*2); ctx.fill(); }
+  });
+
+  // 障碍
+  obstacles.forEach(function(o){
+    if(imgs[o.img]){
+      var im = imgs[o.img];
+      var ih = o.h * (im.width/im.height);
+      ctx.drawImage(im, o.x, GROUND-ih, o.w, ih);
+    } else {
+      ctx.fillStyle = '#8c8c91'; ctx.fillRect(o.x, o.y, o.w, o.h);
+    }
+  });
+
+  // 主角 = 球(带旋转/弹性/高光)
+  drawBall(player.x, player.y, player.r, player.rot, player.squash);
+
+  // 状态提示
+  if(state==='ready'){
+    ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#fff'; ctx.font='bold 30px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('⚽ 丛林滚球', W/2, H/2-10);
+    ctx.font='16px sans-serif'; ctx.fillStyle='#d8f0d8';
+    ctx.fillText('点击开始滚动', W/2, H/2+26);
+    ctx.textAlign='left';
+  }
+  if(state==='over'){
+    ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#f06a5a'; ctx.font='bold 34px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('💥 撞上了！', W/2, H/2-20);
+    ctx.font='20px sans-serif'; ctx.fillStyle='#ffd979';
+    ctx.fillText('得分 ' + score, W/2, H/2+16);
+    ctx.font='15px sans-serif'; ctx.fillStyle='#d8f0d8';
+    ctx.fillText('按空格 / 点击 再来一局', W/2, H/2+44);
+    ctx.textAlign='left';
+  }
+}
+function drawCloud(x,y){
+  ctx.fillStyle='rgba(255,255,255,.6)';
+  ctx.beginPath();
+  ctx.arc(x,y,16,0,Math.PI*2);
+  ctx.arc(x+20,y+5,20,0,Math.PI*2);
+  ctx.arc(x+45,y,15,0,Math.PI*2);
+  ctx.fill();
+}
+function gameOver(){
+  state='over';
+  cancelAnimationFrame(raf);
+  if(score>best){ best=score; localStorage.setItem('jungleBest', String(best)); bestEl.textContent=best; }
+  btn.textContent='🔁 再来一局';
+  render();
+}
+
+// ===== 启动 =====
+preload(Object.keys(IMG), function(){
+  render();
+});
+})();
+</script>
+</body>
+</html>
